@@ -48,7 +48,19 @@ interface Session {
 }
 
 const MAX_BUFFER = 2_000;
-const sessions = new Map<string, Session>();
+
+// Store the sessions Map on `globalThis` so its state survives Next.js dev-mode
+// HMR reloads of this module. Without this, any hot-reload (triggered when a
+// *different* route compiles for the first time) resets the Map and orphans
+// in-flight sessions — producing "Unknown session" errors on the SSE stream
+// moments after POST /api/agent returns 202. Safe in production because the
+// module is loaded once per server instance.
+const globalStore = globalThis as unknown as {
+  __gemAgentSessions?: Map<string, Session>;
+};
+const sessions: Map<string, Session> =
+  globalStore.__gemAgentSessions ?? new Map<string, Session>();
+globalStore.__gemAgentSessions = sessions;
 
 class InMemoryEventBusAdapter implements EventBusAdapter {
   async createSession(id: string): Promise<void> {

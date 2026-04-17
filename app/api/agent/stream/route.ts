@@ -11,7 +11,9 @@ export async function GET(req: NextRequest) {
   const lastEventId = req.nextUrl.searchParams.get('lastEventId') ?? undefined;
 
   if (!sessionId) return new Response('sessionId required', { status: 400 });
-  if (!getSession(sessionId)) return new Response('unknown session', { status: 404 });
+  // getSession is async via the adapter; must await (was previously `!Promise`
+  // which is always false → 404 never triggered).
+  if (!(await getSession(sessionId))) return new Response('unknown session', { status: 404 });
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
