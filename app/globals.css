@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html, body {
+    background: #0a0b0d;
+    color: #e6e8ec;
+  }
+
+  ::selection {
+    background: rgba(0, 201, 160, 0.35);
+    color: #ffffff;
+  }
+
+  /* Palantir/Linear-style dense scrollbar */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0a0b0d;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1e222b;
+    border-radius: 4px;
+    border: 2px solid #0a0b0d;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #2a2f3b;
+  }
+
+  :focus-visible {
+    outline: 1px solid #00c9a0;
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-bg-panel border border-bg-border rounded;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-2xs font-mono uppercase tracking-wider border rounded-sm;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium
+           bg-teal text-bg-base border border-teal rounded
+           hover:bg-teal-dim hover:border-teal-dim
+           disabled:opacity-40 disabled:cursor-not-allowed
+           transition-colors;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium
+           bg-transparent text-fg-primary border border-bg-border rounded
+           hover:border-fg-muted hover:bg-bg-elevated
+           disabled:opacity-40 disabled:cursor-not-allowed
+           transition-colors;
+  }
+  .input {
+    @apply w-full bg-bg-elevated border border-bg-border rounded px-3 py-2 text-sm
+           text-fg-primary placeholder:text-fg-muted
+           focus:border-teal focus:outline-none transition-colors;
+  }
+  .label {
+    @apply block text-2xs font-mono uppercase tracking-wider text-fg-secondary mb-1.5;
+  }
+}
+
+/* Pulse indicator for active phase in stepper */
+@keyframes teal-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 201, 160, 0.5); }
+  50%      { box-shadow: 0 0 0 6px rgba(0, 201, 160, 0); }
+}
+.pulse-dot {
+  animation: teal-pulse 1.6s ease-in-out infinite;
+}
