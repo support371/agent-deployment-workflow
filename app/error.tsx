@@ -14,11 +14,11 @@ export default function Error({ error, reset }: ErrorProps) {
   }, [error]);
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-lg p-6 text-center">
-        <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-red-500/10 flex items-center justify-center">
+    <div className="min-h-screen bg-bg-base flex items-center justify-center p-4">
+      <div className="max-w-md w-full panel p-6 text-center">
+        <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-status-err/10 flex items-center justify-center">
           <svg
-            className="w-6 h-6 text-red-500"
+            className="w-6 h-6 text-status-err"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -32,16 +32,16 @@ export default function Error({ error, reset }: ErrorProps) {
           </svg>
         </div>
         
-        <h2 className="text-xl font-semibold text-zinc-100 mb-2">
+        <h2 className="text-xl font-semibold text-fg-primary mb-2">
           Something went wrong
         </h2>
         
-        <p className="text-zinc-400 text-sm mb-4">
+        <p className="text-fg-secondary text-sm mb-4">
           An unexpected error occurred while processing your request.
         </p>
 
         {error.digest && (
-          <p className="text-zinc-500 text-xs font-mono mb-4">
+          <p className="text-fg-muted text-xs font-mono mb-4">
             Error ID: {error.digest}
           </p>
         )}
@@ -49,13 +49,13 @@ export default function Error({ error, reset }: ErrorProps) {
         <div className="flex gap-3 justify-center">
           <button
             onClick={reset}
-            className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-md text-sm font-medium transition-colors"
+            className="btn-ghost"
           >
             Try again
           </button>
           <button
             onClick={() => window.location.href = '/'}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md text-sm font-medium transition-colors"
+            className="btn-primary"
           >
             Go home
           </button>

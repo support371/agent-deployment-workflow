@@ -1,5 +1,5 @@
 // lib/agent.ts
-// Claude-driven build/test/fix loop.
+// Multi-provider (Claude/OpenAI) build/test/fix loop.
 //
 // Design:
 //   - The model is the planner; we expose 5 tools that map 1:1 to sandbox ops.
@@ -7,6 +7,7 @@
 //   - Every tool call and model message is surfaced on the event bus so the UI
 //     renders a live transcript, not a black box.
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { env } from './env';
 import { emit } from './event-bus';
 import { provision, type RunnerResult } from './sandbox-runner';
@@ -29,12 +30,12 @@ Tools:
 - apply_patch: apply a unified diff to an existing file (prefer this for small edits).
 - mark_ready_for_deploy: signal the orchestrator that the build is green and a deploy should proceed.`;
 
-const TOOLS: Anthropic.Messages.Tool[] = [
-  {
-    name: 'run_command',
+// Tool schemas shared by both providers
+const TOOL_SCHEMAS = {
+  run_command: {
     description: 'Execute a shell command inside the sandbox and return stdout, stderr, exit code.',
-    input_schema: {
-      type: 'object',
+    parameters: {
+      type: 'object' as const,
       properties: {
         cmd: { type: 'string', description: 'Executable, e.g. "npm"' },
         args: { type: 'array', items: { type: 'string' }, description: 'Argument list' },
@@ -48,11 +49,10 @@ const TOOLS: Anthropic.Messages.Tool[] = [
       required: ['cmd', 'args', 'phase'],
     },
   },
-  {
-    name: 'write_file',
+  write_file: {
     description: 'Create or overwrite a file at the given absolute path inside the sandbox.',
-    input_schema: {
-      type: 'object',
+    parameters: {
+      type: 'object' as const,
       properties: {
         path: { type: 'string' },
         content: { type: 'string' },
@@ -60,20 +60,18 @@ const TOOLS: Anthropic.Messages.Tool[] = [
       required: ['path', 'content'],
     },
   },
-  {
-    name: 'read_file',
+  read_file: {
     description: 'Read a UTF-8 file and return its contents.',
-    input_schema: {
-      type: 'object',
+    parameters: {
+      type: 'object' as const,
       properties: { path: { type: 'string' } },
       required: ['path'],
     },
   },
-  {
-    name: 'apply_patch',
+  apply_patch: {
     description: 'Apply a unified diff patch to an existing file. Prefer this over write_file for small edits.',
-    input_schema: {
-      type: 'object',
+    parameters: {
+      type: 'object' as const,
       properties: {
         path: { type: 'string', description: 'Absolute path to the file to patch' },
         patch: { type: 'string', description: 'Unified diff format patch content' },
@@ -81,11 +79,10 @@ const TOOLS: Anthropic.Messages.Tool[] = [
       required: ['path', 'patch'],
     },
   },
-  {
-    name: 'mark_ready_for_deploy',
+  mark_ready_for_deploy: {
     description: 'Declare that the project builds and tests pass; orchestrator will open PR and deploy.',
-    input_schema: {
-      type: 'object',
+    parameters: {
+      type: 'object' as const,
       properties: {
         changelog: { type: 'string', description: 'One-paragraph summary of changes' },
         preview_cmd: { type: 'string', description: 'Command to start the dev server, e.g. "npm run dev"' },
@@ -93,7 +90,134 @@ const TOOLS: Anthropic.Messages.Tool[] = [
       required: ['changelog'],
     },
   },
-];
+};
+
+// Anthropic format
+const ANTHROPIC_TOOLS: Anthropic.Messages.Tool[] = Object.entries(TOOL_SCHEMAS).map(
+  ([name, schema]) => ({
+    name,
+    description: schema.description,
+    input_schema: schema.parameters,
+  }),
+);
+
+// OpenAI format
+const OPENAI_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = Object.entries(TOOL_SCHEMAS).map(
+  ([name, schema]) => ({
+    type: 'function' as const,
+    function: {
+      name,
+      description: schema.description,
+      parameters: schema.parameters,
+    },
+  }),
+);
+
+// Unified tool call interface
+interface ToolCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+interface ToolResult {
+  id: string;
+  content: string;
+  isError: boolean;
+}
+
+// Execute a single tool call against the runner
+async function executeTool(
+  sessionId: string,
+  runner: RunnerResult,
+  tc: ToolCall,
+): Promise<{ result: ToolResult; changelog?: string; previewCmd?: string; done?: boolean }> {
+  const { id, name, input } = tc;
+  
+  try {
+    if (name === 'run_command') {
+      const cmd = String(input.cmd);
+      const args = Array.isArray(input.args) ? (input.args as string[]) : [];
+      const phase = (input.phase as
+        | 'installing' | 'building' | 'testing' | 'fixing' | 'scaffolding') ?? 'building';
+      const r = await runner.runCmd(phase, cmd, args, { sudo: Boolean(input.sudo) });
+      return {
+        result: {
+          id,
+          content: JSON.stringify({
+            exitCode: r.exitCode,
+            stdoutTail: r.stdout.slice(-4_000),
+            stderrTail: r.stderr.slice(-4_000),
+          }),
+          isError: r.exitCode !== 0,
+        },
+      };
+    } else if (name === 'write_file') {
+      await runner.writeFile(String(input.path), String(input.content));
+      return {
+        result: {
+          id,
+          content: JSON.stringify({ ok: true, path: input.path }),
+          isError: false,
+        },
+      };
+    } else if (name === 'read_file') {
+      const txt = await runner.readFile(String(input.path));
+      return {
+        result: {
+          id,
+          content: txt.length > 20_000 ? txt.slice(0, 20_000) + '\n…[truncated]' : txt,
+          isError: false,
+        },
+      };
+    } else if (name === 'apply_patch') {
+      const filePath = String(input.path);
+      const patch = String(input.patch);
+      const patchResult = await runner.applyPatch(filePath, patch);
+      return {
+        result: {
+          id,
+          content: JSON.stringify(patchResult),
+          isError: !patchResult.ok,
+        },
+      };
+    } else if (name === 'mark_ready_for_deploy') {
+      const changelog = String(input.changelog ?? 'Build ready.');
+      const previewCmd = input.preview_cmd ? String(input.preview_cmd) : 'npm run dev';
+      return {
+        result: {
+          id,
+          content: JSON.stringify({ accepted: true }),
+          isError: false,
+        },
+        changelog,
+        previewCmd,
+        done: true,
+      };
+    } else {
+      return {
+        result: {
+          id,
+          content: `Unknown tool: ${name}`,
+          isError: true,
+        },
+      };
+    }
+  } catch (err) {
+    emit(sessionId, {
+      phase: 'failed',
+      kind: 'error',
+      message: `tool ${name} failed: ${(err as Error).message}`,
+    });
+    return {
+      result: {
+        id,
+        content: (err as Error).message,
+        isError: true,
+      },
+    };
+  }
+}
 
 export interface AgentOutcome {
   ok: boolean;
@@ -111,10 +235,14 @@ export async function runAgent(
   req: AgentRequest,
 ): Promise<AgentOutcome> {
   const e = env();
-  const client = new Anthropic({ apiKey: e.ANTHROPIC_API_KEY });
+  const provider = e.AGENT_PROVIDER;
   const maxIters = Math.max(1, Math.min(req.maxIterations ?? 12, 25));
 
-  emit(sessionId, { phase: 'planning', kind: 'status', message: 'Agent online. Planning…' });
+  emit(sessionId, {
+    phase: 'planning',
+    kind: 'status',
+    message: `Agent online (${provider}). Planning…`,
+  });
 
   const runner: RunnerResult = await provision({
     sessionId,
@@ -133,141 +261,176 @@ export async function runAgent(
     `You may iterate up to ${maxIters} tool-call rounds.`,
   ].join('\n');
 
-  const messages: Anthropic.Messages.MessageParam[] = [
-    { role: 'user', content: userSeed },
-  ];
-
   let changelog: string | null = null;
   let previewCmd: string | null = null;
   let iter = 0;
   let done = false;
 
   try {
-    while (iter < maxIters && !done) {
-      iter++;
-      emit(sessionId, {
-        phase: iter === 1 ? 'planning' : 'building',
-        kind: 'status',
-        message: `iteration ${iter}/${maxIters}`,
-      });
+    if (provider === 'openai') {
+      // ─────────────────────────────────────────────────────────────
+      // OpenAI path
+      // ─────────────────────────────────────────────────────────────
+      const openai = new OpenAI({ apiKey: e.OPENAI_API_KEY });
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userSeed },
+      ];
 
-      const response = await client.messages.create({
-        model: e.ANTHROPIC_MODEL,
-        max_tokens: 4096,
-        system: SYSTEM_PROMPT,
-        tools: TOOLS,
-        messages,
-      });
+      while (iter < maxIters && !done) {
+        iter++;
+        emit(sessionId, {
+          phase: iter === 1 ? 'planning' : 'building',
+          kind: 'status',
+          message: `iteration ${iter}/${maxIters}`,
+        });
 
-      // Surface any prose the model emits.
-      for (const block of response.content) {
-        if (block.type === 'text' && block.text.trim()) {
+        const response = await openai.chat.completions.create({
+          model: e.OPENAI_MODEL,
+          max_tokens: 4096,
+          tools: OPENAI_TOOLS,
+          messages,
+        });
+
+        const choice = response.choices[0];
+        if (!choice) break;
+
+        const assistantMsg = choice.message;
+
+        // Surface any prose the model emits
+        if (assistantMsg.content?.trim()) {
           emit(sessionId, {
             phase: 'planning',
             kind: 'thought',
             stream: 'agent',
-            message: block.text,
+            message: assistantMsg.content,
           });
         }
-      }
 
-      if (response.stop_reason === 'end_turn' || response.stop_reason === 'stop_sequence') {
-        // Model finished without calling mark_ready_for_deploy — treat as incomplete.
-        emit(sessionId, {
-          phase: 'failed',
-          kind: 'error',
-          message: 'Agent stopped without marking ready for deploy.',
-        });
-        break;
-      }
+        // Add assistant message to history
+        messages.push(assistantMsg);
 
-      if (response.stop_reason !== 'tool_use') continue;
-
-      const toolUses = response.content.filter(
-        (b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use',
-      );
-
-      // Append assistant turn verbatim so the tool_result ids line up.
-      messages.push({ role: 'assistant', content: response.content });
-
-      const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
-
-      for (const tu of toolUses) {
-        const input = tu.input as Record<string, unknown>;
-        try {
-          if (tu.name === 'run_command') {
-            const cmd = String(input.cmd);
-            const args = Array.isArray(input.args) ? (input.args as string[]) : [];
-            const phase = (input.phase as
-              | 'installing' | 'building' | 'testing' | 'fixing' | 'scaffolding') ?? 'building';
-            const r = await runner.runCmd(phase, cmd, args, { sudo: Boolean(input.sudo) });
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: tu.id,
-              content: JSON.stringify({
-                exitCode: r.exitCode,
-                stdoutTail: r.stdout.slice(-4_000),
-                stderrTail: r.stderr.slice(-4_000),
-              }),
-              is_error: r.exitCode !== 0,
-            });
-          } else if (tu.name === 'write_file') {
-            await runner.writeFile(String(input.path), String(input.content));
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: tu.id,
-              content: JSON.stringify({ ok: true, path: input.path }),
-            });
-          } else if (tu.name === 'read_file') {
-            const txt = await runner.readFile(String(input.path));
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: tu.id,
-              content: txt.length > 20_000 ? txt.slice(0, 20_000) + '\n…[truncated]' : txt,
-            });
-          } else if (tu.name === 'apply_patch') {
-            const filePath = String(input.path);
-            const patch = String(input.patch);
-            const result = await runner.applyPatch(filePath, patch);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: tu.id,
-              content: JSON.stringify(result),
-              is_error: !result.ok,
-            });
-          } else if (tu.name === 'mark_ready_for_deploy') {
-            changelog = String(input.changelog ?? 'Build ready.');
-            previewCmd = input.preview_cmd ? String(input.preview_cmd) : 'npm run dev';
-            done = true;
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: tu.id,
-              content: JSON.stringify({ accepted: true }),
-            });
-          } else {
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: tu.id,
-              content: `Unknown tool: ${tu.name}`,
-              is_error: true,
-            });
-          }
-        } catch (err) {
+        if (choice.finish_reason === 'stop' || !assistantMsg.tool_calls?.length) {
           emit(sessionId, {
             phase: 'failed',
             kind: 'error',
-            message: `tool ${tu.name} failed: ${(err as Error).message}`,
+            message: 'Agent stopped without marking ready for deploy.',
           });
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: tu.id,
-            content: (err as Error).message,
-            is_error: true,
+          break;
+        }
+
+        // Process tool calls
+        for (const tc of assistantMsg.tool_calls) {
+          // Handle both standard function calls and custom tool calls
+          if (tc.type !== 'function') continue;
+          
+          const toolCall: ToolCall = {
+            id: tc.id,
+            name: tc.function.name,
+            input: JSON.parse(tc.function.arguments || '{}'),
+          };
+
+          const { result, changelog: cl, previewCmd: pc, done: isDone } = await executeTool(
+            sessionId,
+            runner,
+            toolCall,
+          );
+
+          if (cl) changelog = cl;
+          if (pc) previewCmd = pc;
+          if (isDone) done = true;
+
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: result.content,
           });
         }
       }
+    } else {
+      // ─────────────────────────────────────────────────────────────
+      // Anthropic path
+      // ─────────────────────────────────────────────────────────────
+      const anthropic = new Anthropic({ apiKey: e.ANTHROPIC_API_KEY });
+      const messages: Anthropic.Messages.MessageParam[] = [
+        { role: 'user', content: userSeed },
+      ];
 
-      messages.push({ role: 'user', content: toolResults });
+      while (iter < maxIters && !done) {
+        iter++;
+        emit(sessionId, {
+          phase: iter === 1 ? 'planning' : 'building',
+          kind: 'status',
+          message: `iteration ${iter}/${maxIters}`,
+        });
+
+        const response = await anthropic.messages.create({
+          model: e.ANTHROPIC_MODEL,
+          max_tokens: 4096,
+          system: SYSTEM_PROMPT,
+          tools: ANTHROPIC_TOOLS,
+          messages,
+        });
+
+        // Surface any prose the model emits.
+        for (const block of response.content) {
+          if (block.type === 'text' && block.text.trim()) {
+            emit(sessionId, {
+              phase: 'planning',
+              kind: 'thought',
+              stream: 'agent',
+              message: block.text,
+            });
+          }
+        }
+
+        if (response.stop_reason === 'end_turn' || response.stop_reason === 'stop_sequence') {
+          emit(sessionId, {
+            phase: 'failed',
+            kind: 'error',
+            message: 'Agent stopped without marking ready for deploy.',
+          });
+          break;
+        }
+
+        if (response.stop_reason !== 'tool_use') continue;
+
+        const toolUses = response.content.filter(
+          (b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use',
+        );
+
+        // Append assistant turn verbatim so the tool_result ids line up.
+        messages.push({ role: 'assistant', content: response.content });
+
+        const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+
+        for (const tu of toolUses) {
+          const toolCall: ToolCall = {
+            id: tu.id,
+            name: tu.name,
+            input: tu.input as Record<string, unknown>,
+          };
+
+          const { result, changelog: cl, previewCmd: pc, done: isDone } = await executeTool(
+            sessionId,
+            runner,
+            toolCall,
+          );
+
+          if (cl) changelog = cl;
+          if (pc) previewCmd = pc;
+          if (isDone) done = true;
+
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: tu.id,
+            content: result.content,
+            is_error: result.isError,
+          });
+        }
+
+        messages.push({ role: 'user', content: toolResults });
+      }
     }
 
     if (done) {

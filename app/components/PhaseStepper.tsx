@@ -24,15 +24,15 @@ export function PhaseStepper({
   const idx = current ? PHASES.findIndex((p) => p.key === current) : -1;
 
   return (
-    <div className="panel px-3 py-3">
-      <div className="flex items-center justify-between gap-1">
+    <div className="panel px-3 py-2.5 md:py-3">
+      <div className="flex items-center gap-1 overflow-x-auto">
         {PHASES.map((p, i) => {
           const state: 'past' | 'active' | 'future' =
             i < idx ? 'past' : i === idx ? 'active' : 'future';
           const isFailed = failed && i === idx;
 
           return (
-            <div key={p.key} className="flex items-center gap-1 min-w-0 flex-1">
+            <div key={p.key} className="flex items-center gap-1 shrink-0">
               <div
                 className={`w-2 h-2 rounded-full shrink-0 ${
                   isFailed
@@ -45,7 +45,7 @@ export function PhaseStepper({
                 }`}
               />
               <span
-                className={`text-2xs font-mono uppercase tracking-wider truncate ${
+                className={`text-[10px] md:text-2xs font-mono uppercase tracking-wider ${
                   isFailed
                     ? 'text-status-err'
                     : state === 'past'
@@ -59,7 +59,7 @@ export function PhaseStepper({
               </span>
               {i < PHASES.length - 1 && (
                 <div
-                  className={`flex-1 h-px ${
+                  className={`w-3 md:w-4 h-px shrink-0 ${
                     state === 'past' ? 'bg-teal/40' : 'bg-bg-border'
                   }`}
                 />

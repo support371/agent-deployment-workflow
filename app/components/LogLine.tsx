@@ -38,10 +38,12 @@ export function LogLine({ e }: { e: StreamEvent }) {
   })();
 
   return (
-    <div className="flex gap-3 py-0.5 font-mono text-xs leading-relaxed hover:bg-bg-elevated/40 px-3">
-      <span className="text-fg-muted shrink-0 select-none">{time}</span>
-      <span className="text-fg-muted shrink-0 w-14 select-none">[{label}]</span>
-      <span className={`${toneClass} whitespace-pre-wrap break-words min-w-0`}>
+    <div className="flex flex-wrap sm:flex-nowrap gap-1.5 sm:gap-3 py-1.5 sm:py-0.5 font-mono text-sm sm:text-xs leading-relaxed hover:bg-bg-elevated/40 px-3 border-b border-bg-border/30 sm:border-0">
+      <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
+        <span className="text-fg-muted shrink-0 select-none text-[10px] sm:text-xs">{time}</span>
+        <span className={`text-[10px] sm:text-xs shrink-0 w-12 sm:w-14 select-none ${toneClass}`}>[{label}]</span>
+      </div>
+      <span className={`${toneClass} whitespace-pre-wrap break-words min-w-0 w-full sm:w-auto`}>
         {e.message}
       </span>
     </div>

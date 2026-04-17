@@ -3,38 +3,77 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 
 // Mock the sandbox module before importing the route
-vi.mock('@vercel/sandbox', () => ({
-  Sandbox: {
-    create: vi.fn().mockResolvedValue({
-      sandboxId: 'mock-sandbox-123',
-      domain: vi.fn().mockReturnValue('https://preview.vercel.app'),
-      runCommand: vi.fn().mockResolvedValue({ exitCode: 0 }),
-      writeFiles: vi.fn().mockResolvedValue(undefined),
-      readFileToBuffer: vi.fn().mockResolvedValue(Buffer.from('mock content')),
-      stop: vi.fn().mockResolvedValue(undefined),
-    }),
-  },
-}));
+vi.mock('@vercel/sandbox', () => {
+  const mockSandbox = {
+    sandboxId: 'mock-sandbox-123',
+    domain: function(port: number) { return 'https://preview.vercel.app'; },
+    runCommand: function() { return Promise.resolve({ exitCode: 0 }); },
+    writeFiles: function() { return Promise.resolve(undefined); },
+    readFileToBuffer: function() { return Promise.resolve(Buffer.from('mock content')); },
+    stop: function() { return Promise.resolve(undefined); },
+  };
+  return {
+    Sandbox: {
+      create: function() { return Promise.resolve(mockSandbox); },
+    },
+  };
+});
 
 // Mock Anthropic client
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    messages: {
-      create: vi.fn().mockResolvedValue({
-        content: [
-          { type: 'text', text: 'Planning complete' },
-          {
-            type: 'tool_use',
-            id: 'tool-1',
-            name: 'mark_ready_for_deploy',
-            input: { changelog: 'Test changes' },
-          },
-        ],
-        stop_reason: 'tool_use',
-      }),
-    },
-  })),
-}));
+vi.mock('@anthropic-ai/sdk', () => {
+  class MockAnthropic {
+    messages = {
+      create: function() {
+        return Promise.resolve({
+          content: [
+            { type: 'text', text: 'Planning complete' },
+            {
+              type: 'tool_use',
+              id: 'tool-1',
+              name: 'mark_ready_for_deploy',
+              input: { changelog: 'Test changes' },
+            },
+          ],
+          stop_reason: 'tool_use',
+        });
+      },
+    };
+  }
+  return { default: MockAnthropic };
+});
+
+// Mock OpenAI client
+vi.mock('openai', () => {
+  class MockOpenAI {
+    chat = {
+      completions: {
+        create: function() {
+          return Promise.resolve({
+            choices: [
+              {
+                message: {
+                  content: 'Planning complete',
+                  tool_calls: [
+                    {
+                      id: 'call-1',
+                      type: 'function',
+                      function: {
+                        name: 'mark_ready_for_deploy',
+                        arguments: JSON.stringify({ changelog: 'Test changes' }),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          });
+        },
+      },
+    };
+  }
+  return { default: MockOpenAI };
+});
 
 describe('POST /api/agent', () => {
   const originalEnv = process.env;

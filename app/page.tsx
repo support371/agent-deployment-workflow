@@ -8,10 +8,13 @@ import { Transcript } from './components/Transcript';
 import { PreviewPane } from './components/PreviewPane';
 import { useAgentStream } from './hooks/useAgentStream';
 
+type MobileTab = 'build' | 'logs' | 'preview';
+
 export default function Page() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [mobileTab, setMobileTab] = useState<MobileTab>('build');
 
   const stream = useAgentStream(sessionId);
   const running = Boolean(sessionId && !stream.done && !stream.failed);
@@ -19,10 +22,8 @@ export default function Page() {
   const startBuild = useCallback(async (req: AgentRequest) => {
     setSubmitting(true);
     setSubmitError(null);
+    setMobileTab('logs'); // Switch to logs when build starts
     try {
-      // If the deployment injects a token (e.g. via server-rendered layout),
-      // we attach it; otherwise the request goes out unauthenticated and the
-      // server either accepts (auth disabled) or rejects with 401.
       const token =
         typeof window !== 'undefined'
           ? (window as { __GEM_AGENT_TOKEN__?: string }).__GEM_AGENT_TOKEN__
@@ -43,6 +44,7 @@ export default function Page() {
       setSessionId(json.sessionId);
     } catch (err) {
       setSubmitError((err as Error).message);
+      setMobileTab('build');
     } finally {
       setSubmitting(false);
     }
@@ -64,76 +66,169 @@ export default function Page() {
     }
   }, []);
 
+  const tabConfig: { key: MobileTab; label: string; badge?: number }[] = [
+    { key: 'build', label: 'Build' },
+    { key: 'logs', label: 'Logs', badge: stream.events.length || undefined },
+    { key: 'preview', label: 'Preview' },
+  ];
+
   return (
-    <main className="min-h-screen flex flex-col">
+    <main className="h-dvh flex flex-col bg-bg-base">
       {/* --- Header --- */}
-      <header className="border-b border-bg-border bg-bg-panel">
-        <div className="px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-7 h-7 rounded bg-teal-glow border border-teal/40 flex items-center justify-center">
-              <span className="text-teal font-display font-bold text-sm">G</span>
+      <header className="border-b border-bg-border bg-bg-panel shrink-0">
+        <div className="px-4 lg:px-6 py-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 lg:gap-3 min-w-0">
+            <div className="w-8 h-8 lg:w-7 lg:h-7 rounded-lg lg:rounded bg-teal-glow border border-teal/40 flex items-center justify-center shrink-0">
+              <span className="text-teal font-display font-bold text-base lg:text-sm">G</span>
             </div>
-            <div>
-              <h1 className="font-display text-base font-bold tracking-tight leading-none">
-                GEM Agent Builder
+            <div className="min-w-0">
+              <h1 className="font-display text-base lg:text-base font-bold tracking-tight leading-none truncate">
+                GEM Agent
               </h1>
-              <p className="text-2xs font-mono text-fg-muted mt-0.5">
-                Instruction → sandbox → test → deploy
+              <p className="text-2xs font-mono text-fg-muted mt-0.5 hidden md:block">
+                Build, test, deploy with AI
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <span className="chip border-bg-border text-fg-secondary">
               <span className={`w-1.5 h-1.5 rounded-full ${running ? 'bg-teal pulse-dot' : stream.failed ? 'bg-status-err' : stream.done ? 'bg-teal' : 'bg-fg-muted'}`} />
-              {running ? 'RUNNING' : stream.failed ? 'FAILED' : stream.done ? 'READY' : 'IDLE'}
+              <span className="text-[10px] lg:text-2xs">
+                {running ? 'RUNNING' : stream.failed ? 'FAILED' : stream.done ? 'READY' : 'IDLE'}
+              </span>
             </span>
-            <button onClick={deployNow} className="btn-ghost" disabled={!stream.done}>
-              ▸ Deploy Now
+            <button 
+              onClick={deployNow} 
+              className="btn-primary text-xs py-1.5 px-3" 
+              disabled={!stream.done}
+            >
+              Deploy
             </button>
           </div>
         </div>
-        <div className="px-6 pb-3">
+        
+        {/* Phase stepper - hidden on mobile, visible on tablet+ */}
+        <div className="hidden md:block px-4 lg:px-6 pb-3">
           <PhaseStepper current={stream.phase} failed={stream.failed} />
         </div>
       </header>
 
-      {/* --- Body: 3-column dashboard --- */}
-      <div className="flex-1 grid grid-cols-12 gap-3 p-3 min-h-0">
-        {/* Left: instruction */}
-        <aside className="col-span-3 min-w-0 flex flex-col gap-3">
-          <InstructionPanel onSubmit={startBuild} running={running || submitting} />
-          {submitError && (
-            <div className="panel p-3 border-status-err/60">
-              <div className="text-2xs font-mono uppercase tracking-wider text-status-err mb-1">
-                Submit failed
+      {/* --- Mobile Tab Bar --- */}
+      <nav className="md:hidden border-b border-bg-border bg-bg-panel shrink-0">
+        <div className="flex">
+          {tabConfig.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setMobileTab(tab.key)}
+              className={`flex-1 py-3 text-sm font-medium transition-colors relative ${
+                mobileTab === tab.key
+                  ? 'text-teal'
+                  : 'text-fg-secondary hover:text-fg-primary'
+              }`}
+            >
+              <span className="flex items-center justify-center gap-1.5">
+                {tab.label}
+                {tab.badge ? (
+                  <span className="min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-teal/20 text-teal text-[10px] font-mono">
+                    {tab.badge > 99 ? '99+' : tab.badge}
+                  </span>
+                ) : null}
+              </span>
+              {mobileTab === tab.key && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-teal" />
+              )}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {/* --- Body --- */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {/* Desktop: 3-column grid */}
+        <div className="hidden md:grid md:grid-cols-12 gap-3 p-3 h-full">
+          {/* Left: instruction */}
+          <aside className="col-span-3 min-w-0 flex flex-col gap-3 overflow-y-auto">
+            <InstructionPanel onSubmit={startBuild} running={running || submitting} />
+            {submitError && (
+              <div className="panel p-3 border-status-err/60">
+                <div className="text-2xs font-mono uppercase tracking-wider text-status-err mb-1">
+                  Submit failed
+                </div>
+                <div className="font-mono text-xs text-fg-secondary break-words">
+                  {submitError}
+                </div>
               </div>
-              <div className="font-mono text-xs text-fg-secondary break-words">
-                {submitError}
+            )}
+            <div className="panel p-3">
+              <div className="label">Session</div>
+              <div className="font-mono text-2xs text-fg-secondary break-all">
+                {sessionId ?? '—'}
+              </div>
+            </div>
+          </aside>
+
+          {/* Middle: transcript */}
+          <section className="col-span-5 min-w-0">
+            <Transcript events={stream.events} />
+          </section>
+
+          {/* Right: preview */}
+          <section className="col-span-4 min-w-0">
+            <PreviewPane
+              previewUrl={stream.previewUrl}
+              sandboxId={stream.sandboxId}
+              deployJobId={stream.deployJobId}
+              changelog={stream.changelog}
+            />
+          </section>
+        </div>
+
+        {/* Mobile: tabbed view */}
+        <div className="md:hidden h-full">
+          {mobileTab === 'build' && (
+            <div className="h-full overflow-y-auto p-3 space-y-3">
+              <InstructionPanel onSubmit={startBuild} running={running || submitting} />
+              {submitError && (
+                <div className="panel p-3 border-status-err/60">
+                  <div className="text-2xs font-mono uppercase tracking-wider text-status-err mb-1">
+                    Submit failed
+                  </div>
+                  <div className="font-mono text-xs text-fg-secondary break-words">
+                    {submitError}
+                  </div>
+                </div>
+              )}
+              {/* Mobile phase stepper */}
+              <div className="panel p-3">
+                <div className="label mb-2">Build Progress</div>
+                <PhaseStepper current={stream.phase} failed={stream.failed} />
+              </div>
+              <div className="panel p-3">
+                <div className="label">Session</div>
+                <div className="font-mono text-2xs text-fg-secondary break-all">
+                  {sessionId ?? '—'}
+                </div>
               </div>
             </div>
           )}
-          <div className="panel p-3">
-            <div className="label">Session</div>
-            <div className="font-mono text-2xs text-fg-secondary break-all">
-              {sessionId ?? '—'}
+
+          {mobileTab === 'logs' && (
+            <div className="h-full">
+              <Transcript events={stream.events} />
             </div>
-          </div>
-        </aside>
+          )}
 
-        {/* Middle: transcript */}
-        <section className="col-span-5 min-w-0">
-          <Transcript events={stream.events} />
-        </section>
-
-        {/* Right: preview */}
-        <section className="col-span-4 min-w-0">
-          <PreviewPane
-            previewUrl={stream.previewUrl}
-            sandboxId={stream.sandboxId}
-            deployJobId={stream.deployJobId}
-            changelog={stream.changelog}
-          />
-        </section>
+          {mobileTab === 'preview' && (
+            <div className="h-full">
+              <PreviewPane
+                previewUrl={stream.previewUrl}
+                sandboxId={stream.sandboxId}
+                deployJobId={stream.deployJobId}
+                changelog={stream.changelog}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );

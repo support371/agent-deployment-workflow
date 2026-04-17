@@ -3,9 +3,16 @@
 import { z } from 'zod';
 
 const schema = z.object({
-  // --- Agent model ---
-  ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
-  ANTHROPIC_MODEL: z.string().default('claude-opus-4-7'),
+  // --- Agent model provider ---
+  AGENT_PROVIDER: z.enum(['anthropic', 'openai']).default('anthropic'),
+
+  // --- Anthropic (Claude) ---
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-20250514'),
+
+  // --- OpenAI ---
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default('gpt-4o'),
 
   // --- Vercel Sandbox (OIDC in prod, token fallback locally / in CI) ---
   VERCEL_TEAM_ID: z.string().optional(),
@@ -40,7 +47,17 @@ export function env(): Env {
       .join('; ');
     throw new Error(`Invalid environment: ${msg}`);
   }
-  cached = parsed.data;
+
+  // Validate that the selected provider has its API key
+  const data = parsed.data;
+  if (data.AGENT_PROVIDER === 'anthropic' && !data.ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY is required when AGENT_PROVIDER=anthropic');
+  }
+  if (data.AGENT_PROVIDER === 'openai' && !data.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is required when AGENT_PROVIDER=openai');
+  }
+
+  cached = data;
   return cached;
 }
 
