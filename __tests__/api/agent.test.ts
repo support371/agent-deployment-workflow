@@ -42,6 +42,39 @@ vi.mock('@anthropic-ai/sdk', () => {
   return { default: MockAnthropic };
 });
 
+// Mock OpenAI client
+vi.mock('openai', () => {
+  class MockOpenAI {
+    chat = {
+      completions: {
+        create: function() {
+          return Promise.resolve({
+            choices: [
+              {
+                message: {
+                  content: 'Planning complete',
+                  tool_calls: [
+                    {
+                      id: 'call-1',
+                      type: 'function',
+                      function: {
+                        name: 'mark_ready_for_deploy',
+                        arguments: JSON.stringify({ changelog: 'Test changes' }),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          });
+        },
+      },
+    };
+  }
+  return { default: MockOpenAI };
+});
+
 describe('POST /api/agent', () => {
   const originalEnv = process.env;
 
