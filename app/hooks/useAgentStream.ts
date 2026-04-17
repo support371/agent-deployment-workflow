@@ -10,6 +10,7 @@ interface State {
   sandboxId: string | null;
   deployJobId: string | null;
   changelog: string | null;
+  prUrl: string | null;
   failed: boolean;
   done: boolean;
 }
@@ -21,6 +22,7 @@ const INITIAL: State = {
   sandboxId: null,
   deployJobId: null,
   changelog: null,
+  prUrl: null,
   failed: false,
   done: false,
 };
@@ -86,6 +88,13 @@ function reduce(state: State, e: StreamEvent): State {
   }
   if (e.phase === 'done' && typeof e.data?.changelog === 'string') {
     next.changelog = e.data.changelog as string;
+  }
+  // Extract PR URL from done event or url event with pr context
+  if (typeof e.data?.prUrl === 'string') {
+    next.prUrl = e.data.prUrl as string;
+  }
+  if (e.kind === 'url' && typeof e.data?.url === 'string' && e.data.url.includes('/pull/')) {
+    next.prUrl = e.data.url as string;
   }
 
   return next;

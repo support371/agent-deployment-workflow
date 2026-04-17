@@ -33,7 +33,7 @@ export function LogLine({ e }: { e: StreamEvent }) {
       case 'url': return 'URL';
       case 'error': return 'FAIL';
       case 'done': return 'DONE';
-      default: return e.kind.toUpperCase();
+      default: return (e.kind as string).toUpperCase();
     }
   })();
 

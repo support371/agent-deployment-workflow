@@ -30,6 +30,7 @@ export interface RunnerResult {
   runCmd: (phase: AgentPhase, cmd: string, args: string[], opts?: { sudo?: boolean }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
   writeFile: (path: string, content: string) => Promise<void>;
   readFile: (path: string) => Promise<string>;
+  applyPatch: (path: string, patch: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 const TEMPLATE_REPOS: Record<NonNullable<RunnerInput['template']>, string | null> = {
@@ -137,6 +138,36 @@ export async function provision(input: RunnerInput): Promise<RunnerResult> {
     return buf.toString('utf8');
   };
 
+  const applyPatch: RunnerResult['applyPatch'] = async (path, patch) => {
+    // Apply unified diff patch using the sandbox's patch utility.
+    // We write the patch to a temp file, apply it with `patch`, then clean up.
+    const patchPath = `/tmp/patch-${Date.now()}.diff`;
+    try {
+      await sandbox.writeFiles([{ path: patchPath, content: Buffer.from(patch, 'utf8') }]);
+      const result = await sandbox.runCommand({
+        cmd: 'patch',
+        args: ['-u', path, patchPath],
+        sudo: false,
+      });
+      // Clean up temp patch file
+      await sandbox.runCommand({ cmd: 'rm', args: ['-f', patchPath], sudo: false });
+      
+      if (result.exitCode === 0) {
+        emit(sessionId, {
+          phase: 'scaffolding',
+          kind: 'diff',
+          message: `patched ${path}`,
+          data: { path, patch: patch.slice(0, 500) },
+        });
+        return { ok: true };
+      } else {
+        return { ok: false, error: `patch failed with exit code ${result.exitCode}` };
+      }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  };
+
   const stop: RunnerResult['stop'] = async () => {
     try { await sandbox.stop(); } catch { /* best-effort */ }
   };
@@ -150,5 +181,6 @@ export async function provision(input: RunnerInput): Promise<RunnerResult> {
     runCmd,
     writeFile,
     readFile,
+    applyPatch,
   };
 }
