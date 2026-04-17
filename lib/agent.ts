@@ -70,6 +70,18 @@ const TOOLS: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: 'apply_patch',
+    description: 'Apply a unified diff patch to an existing file. Prefer this over write_file for small edits.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file to patch' },
+        patch: { type: 'string', description: 'Unified diff format patch content' },
+      },
+      required: ['path', 'patch'],
+    },
+  },
+  {
     name: 'mark_ready_for_deploy',
     description: 'Declare that the project builds and tests pass; orchestrator will open PR and deploy.',
     input_schema: {
@@ -212,6 +224,16 @@ export async function runAgent(
               type: 'tool_result',
               tool_use_id: tu.id,
               content: txt.length > 20_000 ? txt.slice(0, 20_000) + '\n…[truncated]' : txt,
+            });
+          } else if (tu.name === 'apply_patch') {
+            const filePath = String(input.path);
+            const patch = String(input.patch);
+            const result = await runner.applyPatch(filePath, patch);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tu.id,
+              content: JSON.stringify(result),
+              is_error: !result.ok,
             });
           } else if (tu.name === 'mark_ready_for_deploy') {
             changelog = String(input.changelog ?? 'Build ready.');

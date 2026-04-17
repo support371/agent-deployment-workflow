@@ -17,6 +17,7 @@ import { triggerDeploy } from '@/lib/vercel-deploy';
 import { exportChangedFiles } from '@/lib/sandbox-export';
 import { hasGitHub, hasVercelDeploy } from '@/lib/env';
 import { requireAuth } from '@/lib/auth';
+import { checkRateLimit, getClientId } from '@/lib/rate-limit';
 import type { AgentRequest } from '@/types/events';
 
 export const runtime = 'nodejs';
@@ -42,6 +43,23 @@ const bodySchema = z.object({
 export async function POST(req: NextRequest) {
   const authErr = requireAuth(req);
   if (authErr) return authErr;
+
+  // Rate limiting: 10 requests per minute per IP
+  const clientId = getClientId(req);
+  const rateLimit = checkRateLimit(clientId, { windowMs: 60_000, maxRequests: 10 });
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: 'Rate limit exceeded. Please try again later.' },
+      {
+        status: 429,
+        headers: {
+          'X-RateLimit-Remaining': String(rateLimit.remaining),
+          'X-RateLimit-Reset': String(Math.ceil(rateLimit.resetAt / 1000)),
+          'Retry-After': String(Math.ceil((rateLimit.resetAt - Date.now()) / 1000)),
+        },
+      }
+    );
+  }
 
   const json = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(json);

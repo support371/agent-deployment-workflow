@@ -20,6 +20,9 @@ const schema = z.object({
   GITHUB_TOKEN: z.string().optional(),
   GITHUB_DEFAULT_OWNER: z.string().optional(),
 
+  // --- API Authentication ---
+  GEM_AGENT_TOKEN: z.string().optional(),
+
   // --- Runtime ---
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
