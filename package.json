@@ -4,6 +4,7 @@
   "private": true,
   "description": "GEM Enterprise real-time v0/Vercel agent builder — instruction → sandbox build → test → PR → deploy",
   "scripts": {
+    "setup": "bash scripts/setup.sh",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
