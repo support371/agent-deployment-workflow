@@ -67,40 +67,41 @@ export default function Page() {
   return (
     <main className="min-h-screen flex flex-col">
       {/* --- Header --- */}
-      <header className="border-b border-bg-border bg-bg-panel">
-        <div className="px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-7 h-7 rounded bg-teal-glow border border-teal/40 flex items-center justify-center">
+      <header className="border-b border-bg-border bg-bg-panel shrink-0">
+        <div className="px-4 lg:px-6 py-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 lg:gap-3 min-w-0">
+            <div className="w-7 h-7 rounded bg-teal-glow border border-teal/40 flex items-center justify-center shrink-0">
               <span className="text-teal font-display font-bold text-sm">G</span>
             </div>
-            <div>
-              <h1 className="font-display text-base font-bold tracking-tight leading-none">
+            <div className="min-w-0">
+              <h1 className="font-display text-sm lg:text-base font-bold tracking-tight leading-none truncate">
                 GEM Agent Builder
               </h1>
-              <p className="text-2xs font-mono text-fg-muted mt-0.5">
+              <p className="text-2xs font-mono text-fg-muted mt-0.5 hidden sm:block">
                 Instruction → sandbox → test → deploy
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <span className="chip border-bg-border text-fg-secondary">
               <span className={`w-1.5 h-1.5 rounded-full ${running ? 'bg-teal pulse-dot' : stream.failed ? 'bg-status-err' : stream.done ? 'bg-teal' : 'bg-fg-muted'}`} />
-              {running ? 'RUNNING' : stream.failed ? 'FAILED' : stream.done ? 'READY' : 'IDLE'}
+              <span className="hidden sm:inline">{running ? 'RUNNING' : stream.failed ? 'FAILED' : stream.done ? 'READY' : 'IDLE'}</span>
             </span>
-            <button onClick={deployNow} className="btn-ghost" disabled={!stream.done}>
-              ▸ Deploy Now
+            <button onClick={deployNow} className="btn-ghost text-xs lg:text-sm" disabled={!stream.done}>
+              <span className="hidden sm:inline">▸ Deploy Now</span>
+              <span className="sm:hidden">▸ Deploy</span>
             </button>
           </div>
         </div>
-        <div className="px-6 pb-3">
+        <div className="px-4 lg:px-6 pb-3 overflow-x-auto">
           <PhaseStepper current={stream.phase} failed={stream.failed} />
         </div>
       </header>
 
-      {/* --- Body: 3-column dashboard --- */}
-      <div className="flex-1 grid grid-cols-12 gap-3 p-3 min-h-0">
+      {/* --- Body: responsive dashboard (stacked on mobile, 3-col on desktop) --- */}
+      <div className="flex-1 flex flex-col lg:grid lg:grid-cols-12 gap-3 p-3 min-h-0 overflow-auto">
         {/* Left: instruction */}
-        <aside className="col-span-3 min-w-0 flex flex-col gap-3">
+        <aside className="lg:col-span-3 min-w-0 flex flex-col gap-3 shrink-0">
           <InstructionPanel onSubmit={startBuild} running={running || submitting} />
           {submitError && (
             <div className="panel p-3 border-status-err/60">
@@ -121,12 +122,12 @@ export default function Page() {
         </aside>
 
         {/* Middle: transcript */}
-        <section className="col-span-5 min-w-0">
+        <section className="lg:col-span-5 min-w-0 flex-1 lg:flex-none min-h-[300px] lg:min-h-0">
           <Transcript events={stream.events} />
         </section>
 
         {/* Right: preview */}
-        <section className="col-span-4 min-w-0">
+        <section className="lg:col-span-4 min-w-0 flex-1 lg:flex-none min-h-[300px] lg:min-h-0">
           <PreviewPane
             previewUrl={stream.previewUrl}
             sandboxId={stream.sandboxId}

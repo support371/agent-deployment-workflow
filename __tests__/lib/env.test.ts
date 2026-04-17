@@ -22,7 +22,7 @@ describe('env', () => {
   it('should parse valid environment', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-test-key';
     process.env.ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
-    process.env.NODE_ENV = 'test';
+    // NODE_ENV is already 'test' in vitest, don't reassign (read-only in strict mode)
     
     const { env } = await import('@/lib/env');
     const result = env();
