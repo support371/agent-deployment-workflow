@@ -26,20 +26,20 @@ export function Transcript({ events }: { events: StreamEvent[] }) {
 
   return (
     <div className="panel flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-bg-border">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-3 py-2.5 border-b border-bg-border">
+        <div className="flex items-center justify-between sm:justify-start gap-2">
           <span className="chip border-bg-border text-fg-secondary">
             <span className="w-1.5 h-1.5 rounded-full bg-teal pulse-dot" />
             TRANSCRIPT
           </span>
           <span className="text-2xs font-mono text-fg-muted">{events.length} events</span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0 -mx-1 px-1">
           {(['all', 'agent', 'shell', 'errors'] as Filter[]).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className={`text-2xs font-mono uppercase tracking-wider px-2 py-1 rounded-sm border transition-colors ${
+              className={`text-xs sm:text-2xs font-mono uppercase tracking-wider px-2.5 sm:px-2 py-1.5 sm:py-1 rounded-md sm:rounded-sm border transition-colors whitespace-nowrap ${
                 filter === f
                   ? 'border-teal text-teal bg-teal-glow'
                   : 'border-bg-border text-fg-secondary hover:border-fg-muted'
@@ -48,12 +48,12 @@ export function Transcript({ events }: { events: StreamEvent[] }) {
               {f}
             </button>
           ))}
-          <label className="flex items-center gap-1.5 text-2xs font-mono text-fg-secondary ml-2 cursor-pointer select-none">
+          <label className="flex items-center gap-1.5 text-xs sm:text-2xs font-mono text-fg-secondary ml-1 sm:ml-2 cursor-pointer select-none whitespace-nowrap">
             <input
               type="checkbox"
               checked={autoScroll}
               onChange={(ev) => setAutoScroll(ev.target.checked)}
-              className="accent-teal"
+              className="accent-teal w-4 h-4 sm:w-3 sm:h-3"
             />
             FOLLOW
           </label>
@@ -61,8 +61,13 @@ export function Transcript({ events }: { events: StreamEvent[] }) {
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto py-2">
         {visible.length === 0 ? (
-          <div className="px-3 py-6 text-fg-muted font-mono text-xs">
-            Awaiting events…
+          <div className="px-3 py-8 text-center">
+            <div className="text-fg-muted font-mono text-sm sm:text-xs mb-1">
+              Awaiting events...
+            </div>
+            <div className="text-fg-muted/60 text-xs">
+              Start a build to see real-time logs
+            </div>
           </div>
         ) : (
           visible.map((e) => <LogLine key={e.id} e={e} />)
