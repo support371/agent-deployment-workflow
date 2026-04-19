@@ -6,7 +6,17 @@ interface RateLimitEntry {
   timestamps: number[];
 }
 
-const store = new Map<string, RateLimitEntry>();
+// Both the store and the cleanup interval are hung off `globalThis` so they
+// survive Next.js dev-mode HMR reloads of this module. Without this, each
+// hot-reload would leak a new setInterval timer AND reset the rate-limit
+// state — effectively disabling the limiter in development.
+const globalStore = globalThis as unknown as {
+  __gemAgentRateLimit?: Map<string, RateLimitEntry>;
+  __gemAgentRateLimitTimer?: ReturnType<typeof setInterval>;
+};
+const store: Map<string, RateLimitEntry> =
+  globalStore.__gemAgentRateLimit ?? new Map<string, RateLimitEntry>();
+globalStore.__gemAgentRateLimit = store;
 
 export interface RateLimitConfig {
   windowMs: number;     // Time window in milliseconds
@@ -91,7 +101,11 @@ export function cleanupRateLimitStore(maxAgeMs: number = 5 * 60 * 1000): void {
   }
 }
 
-// Auto-cleanup every 5 minutes
-if (typeof setInterval !== 'undefined') {
-  setInterval(() => cleanupRateLimitStore(), 5 * 60 * 1000);
+// Auto-cleanup every 5 minutes. Guarded against HMR double-registration by
+// checking `globalStore.__gemAgentRateLimitTimer` before creating the timer.
+if (typeof setInterval !== 'undefined' && !globalStore.__gemAgentRateLimitTimer) {
+  globalStore.__gemAgentRateLimitTimer = setInterval(
+    () => cleanupRateLimitStore(),
+    5 * 60 * 1000,
+  );
 }

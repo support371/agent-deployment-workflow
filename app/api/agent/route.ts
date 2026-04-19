@@ -120,7 +120,7 @@ async function orchestrate(sessionId: string, req: AgentRequest) {
         data: { ...stats, fileCount: Object.keys(files).length },
       });
 
-      if (Object.keys(files).length === 0) {
+      if (Object.keys(files).length === 0 && stats.deleted.length === 0) {
         emit(sessionId, {
           phase: 'pr_opening',
           kind: 'status',
@@ -141,7 +141,7 @@ async function orchestrate(sessionId: string, req: AgentRequest) {
           `- Added: ${stats.added}`,
           `- Modified: ${stats.modified}`,
           stats.deleted.length
-            ? `- Deleted (not committed, handle manually): ${stats.deleted.join(', ')}`
+            ? `- Deleted: ${stats.deleted.join(', ')}`
             : '',
           '',
           `**Sandbox**: \`${outcome.sandboxId}\``,
@@ -156,6 +156,7 @@ async function orchestrate(sessionId: string, req: AgentRequest) {
           title,
           body: prBody,
           files,
+          deleted: stats.deleted,
         });
         prUrl = pr.url;
 

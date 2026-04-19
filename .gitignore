@@ -8,3 +8,9 @@ node_modules
 .next/
 .env*.local
 .DS_Store
+
+# Uploaded archives (should never be committed)
+*.zip
+*.tar
+*.tar.gz
+*.tgz

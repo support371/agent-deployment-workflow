@@ -56,6 +56,11 @@ const TOOL_SCHEMAS = {
       properties: {
         path: { type: 'string' },
         content: { type: 'string' },
+        phase: {
+          type: 'string',
+          enum: ['installing', 'building', 'testing', 'fixing', 'scaffolding'],
+          description: 'Which build phase this edit belongs to (for the UI phase stepper).',
+        },
       },
       required: ['path', 'content'],
     },
@@ -75,6 +80,11 @@ const TOOL_SCHEMAS = {
       properties: {
         path: { type: 'string', description: 'Absolute path to the file to patch' },
         patch: { type: 'string', description: 'Unified diff format patch content' },
+        phase: {
+          type: 'string',
+          enum: ['installing', 'building', 'testing', 'fixing', 'scaffolding'],
+          description: 'Which build phase this edit belongs to (for the UI phase stepper).',
+        },
       },
       required: ['path', 'patch'],
     },
@@ -153,7 +163,9 @@ async function executeTool(
         },
       };
     } else if (name === 'write_file') {
-      await runner.writeFile(String(input.path), String(input.content));
+      const phase = (input.phase as
+        | 'installing' | 'building' | 'testing' | 'fixing' | 'scaffolding' | undefined);
+      await runner.writeFile(String(input.path), String(input.content), phase);
       return {
         result: {
           id,
@@ -173,7 +185,9 @@ async function executeTool(
     } else if (name === 'apply_patch') {
       const filePath = String(input.path);
       const patch = String(input.patch);
-      const patchResult = await runner.applyPatch(filePath, patch);
+      const phase = (input.phase as
+        | 'installing' | 'building' | 'testing' | 'fixing' | 'scaffolding' | undefined);
+      const patchResult = await runner.applyPatch(filePath, patch, phase);
       return {
         result: {
           id,
@@ -393,7 +407,19 @@ export async function runAgent(
           break;
         }
 
-        if (response.stop_reason !== 'tool_use') continue;
+        if (response.stop_reason !== 'tool_use') {
+          // Anything that isn't end_turn / stop_sequence / tool_use is a state
+          // we can't recover from by simply re-prompting (max_tokens, pause_turn,
+          // tool_use with no blocks, etc.). Continuing the loop without
+          // updating message history would re-send the same prompt and spin
+          // until the iteration budget is exhausted — fail fast instead.
+          emit(sessionId, {
+            phase: 'failed',
+            kind: 'error',
+            message: `Agent halted unexpectedly: stop_reason=${response.stop_reason}`,
+          });
+          break;
+        }
 
         const toolUses = response.content.filter(
           (b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use',
