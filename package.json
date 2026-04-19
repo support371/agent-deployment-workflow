@@ -4,6 +4,7 @@
   "private": true,
   "description": "GEM Enterprise real-time v0/Vercel agent builder — instruction → sandbox build → test → PR → deploy",
   "scripts": {
+    "setup": "bash scripts/setup.sh",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -33,6 +34,8 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.4.20",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "14.2.18",
     "happy-dom": "^20.9.0",
     "msw": "^2.13.4",
     "postcss": "^8.4.49",
