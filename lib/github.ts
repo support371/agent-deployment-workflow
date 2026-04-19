@@ -12,6 +12,8 @@ export interface PROptions {
   title: string;
   body: string;
   files: Record<string, string>;
+  /** Paths to delete from the base tree (repo-relative). */
+  deleted?: string[];
 }
 
 export interface PRResult {
@@ -63,16 +65,34 @@ export async function openPullRequest(opts: PROptions): Promise<PRResult> {
     commit_sha: baseSha,
   });
 
+  // GitHub's Tree API treats an entry with `sha: null` as a deletion from the
+  // base tree — this is how we propagate agent-triggered deletions into the PR
+  // instead of silently dropping them.
+  const treeEntries: Array<{
+    path: string;
+    mode: '100644';
+    type: 'blob';
+    sha: string | null;
+  }> = [
+    ...blobs.map((b) => ({
+      path: b.path,
+      mode: '100644' as const,
+      type: 'blob' as const,
+      sha: b.sha,
+    })),
+    ...(opts.deleted ?? []).map((path) => ({
+      path,
+      mode: '100644' as const,
+      type: 'blob' as const,
+      sha: null,
+    })),
+  ];
+
   const { data: newTree } = await gh.git.createTree({
     owner: opts.owner,
     repo: opts.repo,
     base_tree: baseCommit.tree.sha,
-    tree: blobs.map((b) => ({
-      path: b.path,
-      mode: '100644',
-      type: 'blob',
-      sha: b.sha,
-    })),
+    tree: treeEntries,
   });
 
   // 5. Commit.

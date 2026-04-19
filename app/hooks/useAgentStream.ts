@@ -48,6 +48,14 @@ export function useAgentStream(sessionId: string | null) {
       try {
         const e = JSON.parse(raw.data) as StreamEvent;
         setState((prev) => reduce(prev, e));
+        // Terminate the EventSource on terminal events. Without this, the
+        // browser auto-reconnects after the server closes the stream, hits
+        // 404 once the 60s session grace window elapses, and retries forever
+        // — leaking connections and spamming the server log.
+        if (e.kind === 'done' || e.kind === 'error') {
+          es.close();
+          esRef.current = null;
+        }
       } catch { /* ignore malformed */ }
     };
 
@@ -57,8 +65,9 @@ export function useAgentStream(sessionId: string | null) {
     es.onmessage = onMessage; // fallback
 
     es.onerror = () => {
-      // Browser auto-reconnects with Last-Event-ID.
-      // We close explicitly once a `done` event has been processed.
+      // Browser auto-reconnects with Last-Event-ID while the stream is live.
+      // Terminal close is handled in onMessage above once the `done` or
+      // `error` event lands.
     };
 
     return () => {
