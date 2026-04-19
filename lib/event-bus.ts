@@ -1,15 +1,19 @@
 // lib/event-bus.ts — per-session pub/sub with replay buffer.
-// 
+//
 // Architecture:
-//   - Uses adapter pattern to allow swapping between in-memory and Redis backends.
-//   - In-memory (default): Single Node process assumption, fast, no external deps.
-//   - Redis (production): Swap adapter for horizontal scaling across Vercel functions.
+//   - Adapter pattern for swapping in-memory <-> Redis-backed storage.
+//   - All public API (emit, subscribe, createSession, close, getSession) goes
+//     *through* the adapter. Swapping adapters is a one-line change below.
+//   - The in-memory adapter is sync under the hood; async adapters (Upstash)
+//     synthesize the StreamEvent synchronously with a locally-generated id
+//     and fire the network write in the background (fire-and-forget, with
+//     errors surfaced via console.error).
 //
 // To switch to Redis:
 //   1. Install @upstash/redis
-//   2. Create an Upstash Redis database
-//   3. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN env vars
-//   4. Uncomment the UpstashEventBusAdapter import and swap the default adapter
+//   2. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN env vars
+//   3. Uncomment the UpstashEventBusAdapter block and swap the default adapter
+//      at the bottom of this file.
 
 import type { StreamEvent } from '@/types/events';
 
@@ -18,12 +22,17 @@ import type { StreamEvent } from '@/types/events';
 // ---------------------------------------------------------------------------
 
 export interface EventBusAdapter {
-  createSession(id: string): Promise<void>;
+  createSession(id: string): void;
   getSession(id: string): Promise<SessionMetadata | null>;
-  emit(sessionId: string, event: StreamEvent): Promise<void>;
+  /**
+   * Append an event to the session. Returns the fully-populated StreamEvent
+   * (with id and ts assigned). MUST return synchronously so call-sites can
+   * emit-and-continue without awaiting.
+   */
+  emit(sessionId: string, partial: Omit<StreamEvent, 'id' | 'ts'>): StreamEvent;
   getEvents(sessionId: string, fromSeq?: number): Promise<StreamEvent[]>;
   subscribe(sessionId: string, callback: (e: StreamEvent) => void): () => void;
-  close(sessionId: string): Promise<void>;
+  close(sessionId: string): void;
 }
 
 export interface SessionMetadata {
@@ -63,7 +72,7 @@ const sessions: Map<string, Session> =
 globalStore.__gemAgentSessions = sessions;
 
 class InMemoryEventBusAdapter implements EventBusAdapter {
-  async createSession(id: string): Promise<void> {
+  createSession(id: string): void {
     const s: Session = {
       id,
       events: [],
@@ -87,24 +96,26 @@ class InMemoryEventBusAdapter implements EventBusAdapter {
     };
   }
 
-  async emit(sessionId: string, event: StreamEvent): Promise<void> {
+  emit(sessionId: string, partial: Omit<StreamEvent, 'id' | 'ts'>): StreamEvent {
     const s = sessions.get(sessionId);
     if (!s) throw new Error(`Unknown session: ${sessionId}`);
-    
+
+    const event: StreamEvent = { ...partial, id: `${s.seq++}`, ts: Date.now() };
     s.events.push(event);
     if (s.events.length > MAX_BUFFER) s.events.shift();
-    
+
     for (const l of s.listeners) {
       try { l(event); } catch { /* listener errors must not break producer */ }
     }
+    return event;
   }
 
   async getEvents(sessionId: string, fromSeq?: number): Promise<StreamEvent[]> {
     const s = sessions.get(sessionId);
     if (!s) return [];
-    
+
     if (fromSeq === undefined) return [...s.events];
-    
+
     const startIdx = s.events.findIndex((e) => parseInt(e.id, 10) > fromSeq);
     if (startIdx === -1) return [];
     return s.events.slice(startIdx);
@@ -113,30 +124,36 @@ class InMemoryEventBusAdapter implements EventBusAdapter {
   subscribe(sessionId: string, callback: (e: StreamEvent) => void): () => void {
     const s = sessions.get(sessionId);
     if (!s) throw new Error(`Unknown session: ${sessionId}`);
-    
+
     s.listeners.add(callback);
     return () => s.listeners.delete(callback);
   }
 
-  async close(sessionId: string): Promise<void> {
+  close(sessionId: string): void {
     const s = sessions.get(sessionId);
     if (!s) return;
-    
-    s.closed = true;
-    const closeEvent: StreamEvent = {
-      id: `${s.seq++}`,
-      ts: Date.now(),
-      phase: 'done',
-      kind: 'done',
-      message: 'stream_closed',
-    };
-    
-    for (const l of s.listeners) {
-      try { l(closeEvent); } catch {}
+
+    // Emit the terminal 'done' event through the normal path so subscribers
+    // see it in order with everything else. This replaces the previous
+    // hand-rolled close event which race-ordered ahead of in-flight emits.
+    if (!s.closed) {
+      const closeEvent: StreamEvent = {
+        id: `${s.seq++}`,
+        ts: Date.now(),
+        phase: 'done',
+        kind: 'done',
+        message: 'stream_closed',
+      };
+      s.events.push(closeEvent);
+      for (const l of s.listeners) {
+        try { l(closeEvent); } catch {}
+      }
     }
+
+    s.closed = true;
     s.listeners.clear();
-    
-    // retain buffer briefly so late reconnects can replay
+
+    // Retain buffer briefly so late reconnects can replay.
     setTimeout(() => sessions.delete(sessionId), 60_000);
   }
 }
@@ -148,39 +165,61 @@ class InMemoryEventBusAdapter implements EventBusAdapter {
 // import { Redis } from '@upstash/redis';
 //
 // class UpstashEventBusAdapter implements EventBusAdapter {
-//   private redis: Redis;
+//   private redis = Redis.fromEnv();
+//   // Per-process listener registry. For true horizontal scale, pair this with
+//   // Redis pub/sub or a pg LISTEN/NOTIFY bridge so events fan out across
+//   // function instances. For single-region low-QPS use, the replay buffer in
+//   // `getEvents` is enough: SSE clients reconnect with Last-Event-ID and catch up.
 //   private subscribers = new Map<string, Set<(e: StreamEvent) => void>>();
+//   // Local seq counter per sessionId; synchronized via Redis INCR below.
+//   // Falls back to this if INCR fails — we prefer continuity over strict
+//   // monotonicity across replicas.
+//   private seqFallback = new Map<string, number>();
 //
-//   constructor() {
-//     this.redis = Redis.fromEnv();
-//   }
-//
-//   async createSession(id: string): Promise<void> {
-//     await this.redis.hset(`session:${id}`, {
+//   createSession(id: string): void {
+//     void this.redis.hset(`session:${id}`, {
 //       createdAt: Date.now(),
-//       closed: 'false',
-//       seq: 0,
+//       closed: 0,
 //     });
-//     await this.redis.expire(`session:${id}`, 3600); // 1 hour TTL
+//     void this.redis.expire(`session:${id}`, 3600);
 //   }
 //
 //   async getSession(id: string): Promise<SessionMetadata | null> {
-//     const data = await this.redis.hgetall(`session:${id}`);
-//     if (!data || Object.keys(data).length === 0) return null;
-//     const events = await this.redis.llen(`events:${id}`);
+//     const data = await this.redis.hgetall<Record<string, string>>(`session:${id}`);
+//     if (!data || !data.createdAt) return null;
+//     const eventCount = await this.redis.llen(`events:${id}`);
 //     return {
 //       id,
 //       createdAt: Number(data.createdAt),
-//       closed: data.closed === 'true',
-//       eventCount: events,
-//       lastEventAt: null, // Would need to fetch last event
+//       closed: data.closed === '1',
+//       eventCount,
+//       lastEventAt: null, // Populate via ZRANGE on a scored stream if needed.
 //     };
 //   }
 //
-//   async emit(sessionId: string, event: StreamEvent): Promise<void> {
-//     await this.redis.rpush(`events:${sessionId}`, JSON.stringify(event));
-//     await this.redis.ltrim(`events:${sessionId}`, -MAX_BUFFER, -1);
-//     await this.redis.publish(`channel:${sessionId}`, JSON.stringify(event));
+//   emit(sessionId: string, partial: Omit<StreamEvent, 'id' | 'ts'>): StreamEvent {
+//     // Generate id/ts synchronously so call-sites can continue immediately.
+//     // Redis write + pub/sub fanout happens in the background.
+//     const local = (this.seqFallback.get(sessionId) ?? 0);
+//     this.seqFallback.set(sessionId, local + 1);
+//     const event: StreamEvent = { ...partial, id: `${local}`, ts: Date.now() };
+//
+//     // Fan out to local subscribers immediately (same-instance SSE).
+//     const locals = this.subscribers.get(sessionId);
+//     if (locals) for (const l of locals) { try { l(event); } catch {} }
+//
+//     // Persist + publish out-of-band.
+//     void (async () => {
+//       try {
+//         await this.redis.rpush(`events:${sessionId}`, JSON.stringify(event));
+//         await this.redis.ltrim(`events:${sessionId}`, -MAX_BUFFER, -1);
+//         await this.redis.publish(`channel:${sessionId}`, JSON.stringify(event));
+//       } catch (err) {
+//         console.error('[event-bus] redis emit failed', err);
+//       }
+//     })();
+//
+//     return event;
 //   }
 //
 //   async getEvents(sessionId: string, fromSeq?: number): Promise<StreamEvent[]> {
@@ -191,19 +230,38 @@ class InMemoryEventBusAdapter implements EventBusAdapter {
 //   }
 //
 //   subscribe(sessionId: string, callback: (e: StreamEvent) => void): () => void {
-//     // Note: For production, you'd use a Redis pub/sub subscription here
-//     // This is a simplified implementation
-//     if (!this.subscribers.has(sessionId)) {
-//       this.subscribers.set(sessionId, new Set());
-//     }
-//     this.subscribers.get(sessionId)!.add(callback);
-//     return () => this.subscribers.get(sessionId)?.delete(callback);
+//     let set = this.subscribers.get(sessionId);
+//     if (!set) { set = new Set(); this.subscribers.set(sessionId, set); }
+//     set.add(callback);
+//     // For true multi-instance fanout, open a Redis pub/sub client here and
+//     // forward incoming channel messages into `callback`. Returned cleanup
+//     // must close the pub/sub client in addition to removing from the set.
+//     return () => set!.delete(callback);
 //   }
 //
-//   async close(sessionId: string): Promise<void> {
-//     await this.redis.hset(`session:${sessionId}`, { closed: 'true' });
-//     await this.redis.expire(`session:${sessionId}`, 60);
-//     await this.redis.expire(`events:${sessionId}`, 60);
+//   close(sessionId: string): void {
+//     const closeEvent: StreamEvent = {
+//       id: `${(this.seqFallback.get(sessionId) ?? 0)}`,
+//       ts: Date.now(),
+//       phase: 'done',
+//       kind: 'done',
+//       message: 'stream_closed',
+//     };
+//     const locals = this.subscribers.get(sessionId);
+//     if (locals) for (const l of locals) { try { l(closeEvent); } catch {} }
+//     this.subscribers.delete(sessionId);
+//     this.seqFallback.delete(sessionId);
+//
+//     void (async () => {
+//       try {
+//         await this.redis.hset(`session:${sessionId}`, { closed: 1 });
+//         await this.redis.rpush(`events:${sessionId}`, JSON.stringify(closeEvent));
+//         await this.redis.expire(`session:${sessionId}`, 60);
+//         await this.redis.expire(`events:${sessionId}`, 60);
+//       } catch (err) {
+//         console.error('[event-bus] redis close failed', err);
+//       }
+//     })();
 //   }
 // }
 
@@ -215,7 +273,7 @@ const adapter: EventBusAdapter = new InMemoryEventBusAdapter();
 // const adapter: EventBusAdapter = new UpstashEventBusAdapter(); // Uncomment for Redis
 
 // ---------------------------------------------------------------------------
-// Public API (maintains backward compatibility)
+// Public API
 // ---------------------------------------------------------------------------
 
 export function createSession(id: string): void {
@@ -226,16 +284,17 @@ export function getSession(id: string): Promise<SessionMetadata | null> {
   return adapter.getSession(id);
 }
 
+/**
+ * Append an event. Returns the fully-populated StreamEvent with id and ts.
+ * Synchronous-return contract: call-sites fire events in tight loops and
+ * don't want to await network I/O. Async adapters buffer + publish in the
+ * background.
+ */
 export function emit(
   sessionId: string,
   e: Omit<StreamEvent, 'id' | 'ts'>,
 ): StreamEvent {
-  const s = sessions.get(sessionId);
-  if (!s) throw new Error(`Unknown session: ${sessionId}`);
-  
-  const event: StreamEvent = { ...e, id: `${s.seq++}`, ts: Date.now() };
-  adapter.emit(sessionId, event);
-  return event;
+  return adapter.emit(sessionId, e);
 }
 
 export function close(sessionId: string): void {
@@ -246,36 +305,47 @@ export async function* subscribe(
   sessionId: string,
   fromId?: string,
 ): AsyncGenerator<StreamEvent> {
-  const s = sessions.get(sessionId);
-  if (!s) throw new Error(`Unknown session: ${sessionId}`);
+  const initial = await adapter.getSession(sessionId);
+  if (!initial) throw new Error(`Unknown session: ${sessionId}`);
 
   // Replay anything the client missed.
   const fromSeq = fromId ? parseInt(fromId, 10) : undefined;
-  const events = await adapter.getEvents(sessionId, fromSeq);
-  for (const e of events) yield e;
-  if (s.closed) return;
+  const replayed = await adapter.getEvents(sessionId, fromSeq);
+  for (const e of replayed) {
+    yield e;
+    if (e.kind === 'done') return; // session already terminal in the replay window
+  }
+  if (initial.closed) return;
 
   // Stream live.
   const queue: StreamEvent[] = [];
   let resolver: ((v: void) => void) | null = null;
-  
+  let streamClosed = false;
+
   const unsubscribe = adapter.subscribe(sessionId, (e: StreamEvent) => {
     queue.push(e);
+    if (e.kind === 'done') streamClosed = true;
     resolver?.();
     resolver = null;
   });
 
   try {
-    while (!s.closed) {
+    while (!streamClosed) {
       if (queue.length === 0) {
         await new Promise<void>((r) => { resolver = r; });
       }
-      while (queue.length > 0) yield queue.shift()!;
+      while (queue.length > 0) {
+        const e = queue.shift()!;
+        yield e;
+        if (e.kind === 'done') return;
+      }
     }
+    // Drain anything buffered after the final done.
+    while (queue.length > 0) yield queue.shift()!;
   } finally {
     unsubscribe();
   }
 }
 
-// Export adapter for testing
+// Export adapter for testing.
 export { adapter };

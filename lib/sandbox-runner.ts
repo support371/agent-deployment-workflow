@@ -28,9 +28,9 @@ export interface RunnerResult {
   testOk: boolean;
   stop: () => Promise<void>;
   runCmd: (phase: AgentPhase, cmd: string, args: string[], opts?: { sudo?: boolean }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
-  writeFile: (path: string, content: string) => Promise<void>;
+  writeFile: (path: string, content: string, phase?: AgentPhase) => Promise<void>;
   readFile: (path: string) => Promise<string>;
-  applyPatch: (path: string, patch: string) => Promise<{ ok: boolean; error?: string }>;
+  applyPatch: (path: string, patch: string, phase?: AgentPhase) => Promise<{ ok: boolean; error?: string }>;
 }
 
 const TEMPLATE_REPOS: Record<NonNullable<RunnerInput['template']>, string | null> = {
@@ -118,12 +118,12 @@ export async function provision(input: RunnerInput): Promise<RunnerResult> {
     return { exitCode: result.exitCode ?? 1, stdout: stdoutBuf, stderr: stderrBuf };
   };
 
-  const writeFile: RunnerResult['writeFile'] = async (path, content) => {
+  const writeFile: RunnerResult['writeFile'] = async (path, content, phase = 'scaffolding') => {
     // Vercel Sandbox SDK exposes writeFiles; we keep a tiny shim so the agent
     // loop can call a single-file primitive without caring about the batching API.
     await sandbox.writeFiles([{ path, content: Buffer.from(content, 'utf8') }]);
     emit(sessionId, {
-      phase: 'scaffolding',
+      phase,
       kind: 'diff',
       message: `wrote ${path} (${content.length} bytes)`,
       data: { path, bytes: content.length },
@@ -138,7 +138,7 @@ export async function provision(input: RunnerInput): Promise<RunnerResult> {
     return buf.toString('utf8');
   };
 
-  const applyPatch: RunnerResult['applyPatch'] = async (path, patch) => {
+  const applyPatch: RunnerResult['applyPatch'] = async (path, patch, phase = 'scaffolding') => {
     // Apply unified diff patch using the sandbox's patch utility.
     // We write the patch to a temp file, apply it with `patch`, then clean up.
     const patchPath = `/tmp/patch-${Date.now()}.diff`;
@@ -151,10 +151,10 @@ export async function provision(input: RunnerInput): Promise<RunnerResult> {
       });
       // Clean up temp patch file
       await sandbox.runCommand({ cmd: 'rm', args: ['-f', patchPath], sudo: false });
-      
+
       if (result.exitCode === 0) {
         emit(sessionId, {
-          phase: 'scaffolding',
+          phase,
           kind: 'diff',
           message: `patched ${path}`,
           data: { path, patch: patch.slice(0, 500) },
